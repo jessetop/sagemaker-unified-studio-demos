@@ -37,6 +37,28 @@ transforms) you can open and extend live, so the demo starts from a known state
 instead of a blank canvas. The full transform list it targets is in
 [`PIPELINE_SPEC.md`](../../PIPELINE_SPEC.md).
 
+## Run the flow headlessly (no UI import)
+You can execute a `.flow` as a **SageMaker Processing job** on the managed Data
+Wrangler container — exactly what the DW UI's *Export → Processing job* generates,
+but from code:
+
+```bash
+# validate first (free — checks JSON, output node, container image):
+python run_flow_processing.py --bucket roi-smdemo-029331796573-us-east-2 \
+  --role-arn arn:aws:iam::029331796573:role/roi-smdemo-exec-role \
+  --profile roitraining --region us-east-2 --dry-run
+# then run for real (drop --dry-run): ~10-15 min on ml.m5.4xlarge, output to
+# s3://.../processed/data-wrangler/
+```
+Or use [`run_flow_notebook.ipynb`](run_flow_notebook.ipynb) from a Studio notebook.
+The launcher resolves the DW container via `image_uris.retrieve("data-wrangler")`,
+mounts the flow at `/opt/ml/processing/flow`, and writes the final node's output.
+
+> ⚠️ `taxi.flow` here is a hand-authored **scaffold** — the launcher is the correct
+> mechanism, but for a guaranteed run use a real DW-exported flow (or validate the
+> scaffold with `--dry-run` then a test run). The same transforms also run for free,
+> no UI and no DW container, via the Glue/EMR/notebook scripts (`shared/taxi_transforms.py`).
+
 ## Old vs new — talking points
 - **Same concepts, different home.** Every node here has a Visual ETL counterpart.
 - **Sample vs full.** Data Wrangler is interactive on a sample then exports a job;
