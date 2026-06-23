@@ -1,0 +1,113 @@
+"""
+Module 7 — deploy the trained model and run inference (Kiro Req 7), old way.
+
+Uses the cheapest serving option — **Serverless Inference** — so there is no
+always-on instance to forget about. Deploys the model from a completed training
+job, sends a few inference requests, prints predictions, then DELETES the endpoint
+(Kiro Req 7.4) so nothing keeps billing.
+
+The NEW way deploys the same model from a Unified Studio project (governed,
+one-click) — see WALKTHROUGH.md.
+
+Usage:
+    python deploy_and_infer.py \
+        --model-data s3://.../model.tar.gz \
+        --role-arn arn:aws:iam::029331796573:role/roi-smdemo-exec-role \
+        --bucket roi-smdemo-029331796573-us-east-2 \
+        --profile roitraining --region us-east-2
+"""
+
+import argparse
+import sys
+
+import boto3
+import sagemaker
+from sagemaker.deserializers import CSVDeserializer
+from sagemaker.serializers import CSVSerializer
+from sagemaker.serverless import ServerlessInferenceConfig
+from sagemaker.sklearn.model import SKLearnModel
+
+
+def main() -> int:
+    p = argparse.ArgumentParser()
+    p.add_argument("--model-data", required=True, help="s3:// path to model.tar.gz")
+    p.add_argument("--role-arn", required=True)
+    p.add_argument("--bucket", required=True)
+    p.add_argument("--profile", default="roitraining")
+    p.add_argument("--region", default="us-east-2")
+    p.add_argument("--prefix", default="ml/taxi")
+    args = p.parse_args()
+
+    boto_sess = boto3.Session(profile_name=args.profile, region_name=args.region)
+    sm_sess = sagemaker.Session(boto_session=boto_sess)
+
+    # Idempotent: drop a model / endpoint-config left by a previous run.
+    _sm = boto_sess.client("sagemaker")
+    for _del in (
+        lambda: _sm.delete_model(ModelName="roi-smdemo-taxi-model"),
+        lambda: _sm.delete_endpoint_config(EndpointConfigName="roi-smdemo-taxi-endpoint"),
+    ):
+        try:
+            _del()
+        except Exception:
+            pass
+
+    model = SKLearnModel(
+        model_data=args.model_data,
+        role=args.role_arn,
+        entry_point="train.py",          # provides model_fn / predict_fn
+        source_dir="04-training",
+        framework_version="1.2-1",
+        sagemaker_session=sm_sess,
+        name="roi-smdemo-taxi-model",
+    )
+
+    endpoint_name = "roi-smdemo-taxi-endpoint"
+    predictor = None
+    try:
+        # Serverless: scales to zero, pay per request + duration. Cheapest demo.
+        # CSV in / CSV out so we can send a plain feature row and read a number.
+        predictor = model.deploy(
+            serverless_inference_config=ServerlessInferenceConfig(
+                memory_size_in_mb=2048, max_concurrency=2
+            ),
+            endpoint_name=endpoint_name,
+            serializer=CSVSerializer(),
+            deserializer=CSVDeserializer(),
+        )
+        print("endpoint InService:", endpoint_name)
+
+        # Pull 3 sample rows from the held-out test set (features only) and score.
+        s3 = boto_sess.client("s3")
+        body = s3.get_object(
+            Bucket=args.bucket, Key=f"{args.prefix}/test/test.csv"
+        )["Body"].read().decode()
+        lines = body.splitlines()
+        header = lines[0].split(",")
+        print("feature columns:", header[1:])
+        for row in lines[1:4]:  # 3 inference requests (Kiro Req 7.3)
+            # Drop the label column; send the numeric feature row as one CSV line.
+            feats = [[float(x) for x in row.split(",")[1:]]]
+            pred = predictor.predict(feats)
+            print(f"  P(high_tip) = {pred}")
+    except Exception as exc:
+        print("DEPLOY/INFER ERROR:", exc)
+        return 1
+    finally:
+        # Always tear the endpoint down (Kiro Req 7.4).
+        if predictor is not None:
+            predictor.delete_endpoint()
+            print("deleted endpoint:", endpoint_name)
+        else:
+            try:
+                boto_sess.client("sagemaker").delete_endpoint(
+                    EndpointName=endpoint_name
+                )
+            except Exception:
+                pass
+
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

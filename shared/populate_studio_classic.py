@@ -1,0 +1,110 @@
+"""
+Populate the Studio Classic panels that need specific SDK constructs:
+  - **Experiments**: create an Experiment with one Run per training job (baseline +
+    the 4 HPO trials), logging real hyperparameters and final metrics so the
+    Experiments → compare view is populated (Kiro Req 4).
+  - **Model Registry**: register the trained model into a model package group so the
+    Model Registry panel shows a versioned, approved model.
+
+Both are metadata operations — **no training compute** is launched. Run once to
+make Studio Classic look complete for a class.
+
+Usage:
+    python populate_studio_classic.py --bucket roi-smdemo-029331796573-us-east-2 \
+        --role-arn arn:aws:iam::029331796573:role/roi-smdemo-exec-role \
+        --model-data s3://sagemaker-us-east-2-029331796573/<train-job>/output/model.tar.gz \
+        --profile roitraining --region us-east-2
+"""
+
+import argparse
+import sys
+
+import boto3
+import sagemaker
+from sagemaker.experiments.run import Run
+from sagemaker.sklearn.model import SKLearnModel
+
+EXPERIMENT = "roi-smdemo-taxi-experiment"
+MODEL_PACKAGE_GROUP = "roi-smdemo-taxi-models"
+
+
+def _final_metrics(desc: dict) -> dict:
+    """Pull {metric_name: value} from a training job description."""
+    return {m["MetricName"]: m["Value"] for m in desc.get("FinalMetricDataList", [])}
+
+
+def log_experiment(boto_sess, sm_sess) -> None:
+    sm = boto_sess.client("sagemaker")
+
+    # Gather the baseline job + the HPO trial jobs (all real training jobs).
+    jobs = []
+    base = sm.list_training_jobs(
+        NameContains="roi-smdemo-taxi-train", MaxResults=1
+    )["TrainingJobSummaries"]
+    jobs += [j["TrainingJobName"] for j in base]
+    hpo = sm.list_training_jobs(
+        NameContains="roi-smdemo-taxi-hpo", MaxResults=10
+    )["TrainingJobSummaries"]
+    jobs += [j["TrainingJobName"] for j in hpo]
+
+    print(f"logging {len(jobs)} runs into experiment '{EXPERIMENT}'")
+    for job in jobs:
+        desc = sm.describe_training_job(TrainingJobName=job)
+        hp = desc.get("HyperParameters", {})
+        metrics = _final_metrics(desc)
+        # Short, stable run name from the job suffix.
+        run_name = job.replace("roi-smdemo-taxi-", "")[:60]
+        with Run(
+            experiment_name=EXPERIMENT, run_name=run_name, sagemaker_session=sm_sess
+        ) as run:
+            for k in ("learning-rate", "max-depth", "n-estimators"):
+                if k in hp:
+                    run.log_parameter(k, hp[k])
+            for name, value in metrics.items():
+                run.log_metric(name=name.replace(":", "_"), value=float(value))
+        print(f"  logged run {run_name}  metrics={metrics}")
+
+
+def register_model(args, sm_sess) -> None:
+    model = SKLearnModel(
+        model_data=args.model_data,
+        role=args.role_arn,
+        entry_point="train.py",
+        source_dir="04-training",
+        framework_version="1.2-1",
+        sagemaker_session=sm_sess,
+    )
+    # register() creates a model package group + an approved version — metadata
+    # only, no endpoint/compute.
+    model.register(
+        content_types=["text/csv"],
+        response_types=["text/csv"],
+        inference_instances=["ml.m5.large", "ml.t2.medium"],
+        transform_instances=["ml.m5.large"],
+        model_package_group_name=MODEL_PACKAGE_GROUP,
+        approval_status="Approved",
+        description="GradientBoosting high_tip classifier (taxi demo).",
+    )
+    print(f"registered model into package group '{MODEL_PACKAGE_GROUP}'")
+
+
+def main() -> int:
+    p = argparse.ArgumentParser()
+    p.add_argument("--bucket", required=True)
+    p.add_argument("--role-arn", required=True)
+    p.add_argument("--model-data", required=True)
+    p.add_argument("--profile", default="roitraining")
+    p.add_argument("--region", default="us-east-2")
+    args = p.parse_args()
+
+    boto_sess = boto3.Session(profile_name=args.profile, region_name=args.region)
+    sm_sess = sagemaker.Session(boto_session=boto_sess)
+
+    log_experiment(boto_sess, sm_sess)
+    register_model(args, sm_sess)
+    print("done — Experiments and Model Registry are now populated.")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
