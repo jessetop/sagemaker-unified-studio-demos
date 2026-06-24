@@ -34,7 +34,21 @@ def _read_channel(path: str) -> pd.DataFrame:
     csvs = [f for f in os.listdir(path) if f.endswith(".csv")]
     if not csvs:
         raise FileNotFoundError(f"No CSV data files found in channel: {path}")
-    return pd.read_csv(os.path.join(path, csvs[0]))
+    csv_path = os.path.join(path, csvs[0])
+    # Header-robust: the standalone CSVs have a header row; the pipeline's
+    # preprocess.py writes headerless (label-first) CSVs. Detect which.
+    with open(csv_path) as fh:
+        first = fh.readline().strip().split(",")
+
+    def _is_num(tok: str) -> bool:
+        try:
+            float(tok)
+            return True
+        except ValueError:
+            return False
+
+    has_header = not all(_is_num(t) for t in first)
+    return pd.read_csv(csv_path, header=0 if has_header else None)
 
 
 def _validate_hyperparameters(args) -> None:

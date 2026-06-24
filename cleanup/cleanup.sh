@@ -33,6 +33,10 @@ aws sagemaker delete-model-package-group --model-package-group-name roi-smdemo-t
 aws sagemaker delete-model --model-name roi-smdemo-taxi-model --profile "$PROFILE" --region "$REGION" 2>/dev/null
 aws sagemaker delete-experiment --experiment-name roi-smdemo-taxi-experiment --profile "$PROFILE" --region "$REGION" 2>/dev/null
 
+echo "== Deleting MLflow tracking server + its teardown schedule =="
+aws sagemaker delete-mlflow-tracking-server --tracking-server-name roi-smdemo-mlflow --profile "$PROFILE" --region "$REGION" 2>/dev/null
+aws scheduler delete-schedule --name roi-smdemo-mlflow-teardown --profile "$PROFILE" --region "$REGION" 2>/dev/null
+
 echo "== Stopping + deleting EMR Serverless applications =="
 for a in $(aws emr-serverless list-applications --profile "$PROFILE" --region "$REGION" \
             --query "applications[?name=='roi-smdemo-taxi-emr'].id" --output text); do

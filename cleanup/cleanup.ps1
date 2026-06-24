@@ -36,6 +36,10 @@ aws sagemaker delete-model --model-name roi-smdemo-taxi-model --profile $Profile
 # SageMaker SDK's experiment cleanup is easiest for this — see note in cleanup.sh.
 aws sagemaker delete-experiment --experiment-name roi-smdemo-taxi-experiment --profile $Profile --region $Region 2>$null
 
+Write-Host "== Deleting MLflow tracking server + its teardown schedule =="
+aws sagemaker delete-mlflow-tracking-server --tracking-server-name roi-smdemo-mlflow --profile $Profile --region $Region 2>$null
+aws scheduler delete-schedule --name roi-smdemo-mlflow-teardown --profile $Profile --region $Region 2>$null
+
 Write-Host "== Stopping + deleting EMR Serverless applications =="
 $apps = aws emr-serverless list-applications --profile $Profile --region $Region `
     --query "applications[?name=='roi-smdemo-taxi-emr'].id" --output text
